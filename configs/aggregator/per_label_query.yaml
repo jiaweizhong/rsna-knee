@@ -1,0 +1,7 @@
+model:
+  aggregator:
+    name: per_label_query
+    params:
+      use_metadata: true
+      dropout: 0.1
+

@@ -1,0 +1,7 @@
+model:
+  backbone:
+    name: timm
+    params:
+      model_name: pvt_v2_b0
+      pretrained: true
+

@@ -1,0 +1,9 @@
+fixed:
+  epochs: 5
+matrix:
+  model.backbone.name: [tiny_cnn]
+  model.selector.name: [uniform, central, learned_topk, recall_safe_topk]
+  model.selector.params.k: [10, 15, 25]
+  model.aggregator.name: [mean_max, per_label_query]
+  loss.ranking_weight: [0.0, 0.1]
+

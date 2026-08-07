@@ -1,0 +1,75 @@
+seed: 2026
+output_dir: runs
+run_name: null
+resume_from: null
+epochs: 10
+precision: bf16
+matmul_precision: high
+compile: false
+gradient_accumulation: 1
+gradient_clip_norm: 1.0
+
+data:
+  train:
+    manifest_path: artifacts/manifests/train_fold0.jsonl
+    dicom_root: /path/to/train_series
+    image_size: [224, 224]
+    normalization: per_slice_robust
+    max_candidates: 75
+    on_decode_error: raise
+  valid:
+    manifest_path: artifacts/manifests/valid_fold0.jsonl
+    dicom_root: /path/to/train_series
+    image_size: [224, 224]
+    normalization: per_slice_robust
+    max_candidates: 75
+    on_decode_error: raise
+
+loader:
+  train:
+    batch_size: 2
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+  valid:
+    batch_size: 2
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+
+model:
+  num_labels: 12
+  in_channels: 3
+  metadata_dim: 5
+  freeze_backbone: false
+  backbone:
+    name: tiny_cnn
+    params:
+      out_dim: 128
+      width: 32
+  selector:
+    name: uniform
+    params:
+      k: 15
+  aggregator:
+    name: per_label_query
+    params:
+      use_metadata: true
+      dropout: 0.1
+
+loss:
+  bce_weight: 1.0
+  ranking_weight: 0.0
+  coverage_weight: 0.0
+  selector_k: 15
+  coverage_temperature: 0.2
+
+optimizer:
+  lr: 0.0003
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+
+scheduler:
+  warmup_steps: 200

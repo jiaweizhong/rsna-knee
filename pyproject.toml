@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rsna-knee"
+version = "0.1.0"
+description = "Scalable DICOM audit and configurable study-level MRI classification framework"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "PyYAML>=6.0",
+  "pydicom>=2.4",
+  "Pillow>=10",
+  "scikit-learn>=1.3",
+  "torch>=2.2",
+]
+
+[project.optional-dependencies]
+train = [
+  "timm>=1.0",
+  "transformers>=4.45",
+]
+dicom = [
+  "pylibjpeg>=2.0",
+  "pylibjpeg-libjpeg>=2.1",
+  "pylibjpeg-openjpeg>=2.4",
+]
+viz = ["matplotlib>=3.8", "seaborn>=0.13"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+rsna-knee-audit = "rsna_knee.audit.cli:main"
+rsna-knee-manifest = "rsna_knee.data.manifest:main"
+rsna-knee-split = "rsna_knee.data.split:main"
+rsna-knee-montage = "rsna_knee.audit.montage:main"
+rsna-knee-train = "rsna_knee.train:main"
+rsna-knee-sweep = "rsna_knee.sweep:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

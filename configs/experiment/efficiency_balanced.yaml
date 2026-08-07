@@ -1,0 +1,27 @@
+run_name: null
+precision: bf16
+compile: true
+data:
+  train:
+    image_size: [224, 224]
+    max_candidates: 75
+  valid:
+    image_size: [224, 224]
+    max_candidates: 75
+model:
+  selector:
+    name: recall_safe_topk
+    params:
+      k: 15
+      width: 24
+  aggregator:
+    name: per_label_query
+    params:
+      use_metadata: true
+      dropout: 0.1
+loss:
+  bce_weight: 1.0
+  ranking_weight: 0.1
+  coverage_weight: 0.1
+  selector_k: 15
+

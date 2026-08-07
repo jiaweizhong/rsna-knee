@@ -1,0 +1,6 @@
+model:
+  aggregator:
+    name: mean_max
+    params:
+      hidden_dim: 256
+

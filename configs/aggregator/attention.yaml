@@ -1,0 +1,6 @@
+model:
+  aggregator:
+    name: attention
+    params:
+      hidden_dim: 128
+

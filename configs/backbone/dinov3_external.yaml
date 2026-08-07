@@ -1,0 +1,11 @@
+model:
+  backbone:
+    name: external
+    params:
+      factory: third_party.dinov3_adapter.build_dinov3_vits16
+      out_dim: 384
+      spatial_dims: 2
+      checkpoint_path: /path/to/dinov3_vits16_checkpoint.pth
+      strict: false
+      factory_kwargs: {}
+

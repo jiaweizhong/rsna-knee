@@ -1,0 +1,11 @@
+model:
+  selector:
+    name: recall_safe_topk
+    params:
+      k: 15
+      width: 24
+loss:
+  selector_k: 15
+  coverage_weight: 0.1
+  coverage_temperature: 0.2
+

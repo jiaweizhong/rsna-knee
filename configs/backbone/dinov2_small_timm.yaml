@@ -1,0 +1,14 @@
+model:
+  backbone:
+    name: timm
+    params:
+      model_name: vit_small_patch14_dinov2.lvd142m
+      pretrained: true
+  in_channels: 3
+data:
+  train:
+    input_mean: [0.485, 0.456, 0.406]
+    input_std: [0.229, 0.224, 0.225]
+  valid:
+    input_mean: [0.485, 0.456, 0.406]
+    input_std: [0.229, 0.224, 0.225]

@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Reference
+attention-efficient/
+baseline-notebooks/
+tmp/

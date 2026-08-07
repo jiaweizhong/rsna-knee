@@ -1,0 +1,7 @@
+model:
+  backbone:
+    name: timm
+    params:
+      model_name: convnext_tiny
+      pretrained: true
+

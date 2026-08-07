@@ -1,0 +1,9 @@
+model:
+  selector:
+    name: uniform
+    params:
+      k: 15
+loss:
+  selector_k: 15
+  coverage_weight: 0.0
+

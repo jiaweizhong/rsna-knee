@@ -1,0 +1,10 @@
+model:
+  selector:
+    name: learned_topk
+    params:
+      k: 15
+      width: 24
+loss:
+  selector_k: 15
+  coverage_weight: 0.1
+

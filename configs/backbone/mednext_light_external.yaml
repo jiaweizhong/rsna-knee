@@ -1,0 +1,12 @@
+model:
+  backbone:
+    name: external
+    params:
+      factory: third_party.mednext_adapter.build_mednext_light_encoder
+      out_dim: 320
+      spatial_dims: 3
+      checkpoint_path: /path/to/mednext_checkpoint.pth
+      strict: false
+      factory_kwargs:
+        in_channels: 1
+

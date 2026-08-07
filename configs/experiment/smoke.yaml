@@ -1,0 +1,25 @@
+run_name: smoke-tiny-uniform
+epochs: 1
+precision: fp32
+data:
+  train:
+    image_size: [64, 64]
+    max_candidates: 6
+  valid:
+    image_size: [64, 64]
+    max_candidates: 6
+loader:
+  train:
+    batch_size: 2
+    num_workers: 0
+  valid:
+    batch_size: 2
+    num_workers: 0
+model:
+  selector:
+    name: uniform
+    params:
+      k: 3
+loss:
+  selector_k: 3
+
