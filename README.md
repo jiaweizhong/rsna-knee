@@ -48,6 +48,17 @@ python -m rsna_knee.audit.cli summarize \
 
 `artifacts/audit/<split>/private/patient_salt.txt` 仅用于 patient hash，不能上传为公开数据集或提交到 Git。
 
+若磁盘空间不足以容纳全部训练数据，可以只解压部分 study，再用 `coverage` 子命令检查当前磁盘上的数据相对 `train.csv` 的覆盖情况，优先确认全部 gold-labeled study（`train.csv` 中 12 个标签列均非空的 study）已经就位：
+
+```bash
+python -m rsna_knee.audit.cli coverage \
+  --audit-root artifacts/audit/train \
+  --train-csv /data/train.csv \
+  --train-series-csv /data/train_series.csv
+```
+
+只依赖 `index` 阶段的产出，不需要先跑 `headers`/`pixels`。输出 `gold_coverage_fraction`（gold study 覆盖比例）、`missing_gold_study_count`，并把缺失的 gold study UID 写到 `artifacts/audit/train/issues/missing_gold_studies.csv`，方便针对性补齐；同时给出 `series_bucket_full_corpus` 与 `series_bucket_on_disk` 两个 plane×fluid-sensitive 分桶计数，用于判断当前子集在 scanner/协议维度上是否明显失衡。
+
 建议先运行少量 shard：
 
 ```bash

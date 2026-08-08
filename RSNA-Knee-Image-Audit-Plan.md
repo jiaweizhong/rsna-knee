@@ -369,6 +369,8 @@ Other / unknown series
 
 ## 10. A5：标签、报告与伪相关 Audit
 
+> 官方已澄清的标注规则（作为本节所有一致性分析的基准，而非重新假设）：gold 标签由两名肌骨放射科医生独立评图、第三人仲裁分歧产生，独立于报告文本；报告与影像结论冲突时以影像为准；模糊/临界表现一律判为阴性。已知方向性偏差：报告写作阈值更宽松，容易比 gold 标签"过度报告"阳性。社区分析（非官方）显示全部约 58 个 gold study 相对约 4,407 个训练 study 存在约 2×（骨折达 3.1×）的异常富集，因此从 gold 子集估计的患病率/阈值不能代表全量分布。本节的 `report_label_agreement.parquet` 分析应显式验证这一"报告过度报告"的方向是否成立，而不只是报告一致率数字。
+
 ### 10.1 标签统计
 
 分别对 gold、规则派生、LLM 派生标签输出：
@@ -401,6 +403,7 @@ Other / unknown series
 - gold 验证指标只在从未参与训练的 study 上计算。
 - 报告中直接出现的 study/patient 标识不能成为文本特征。
 - 推理模型不得依赖测试时不存在的报告字段。
+- 报告原文不得发送给商业 LLM API（OpenAI、Anthropic、Google 等，包括协作使用的 Claude）用于标签抽取或其他处理；只能使用本地/开源权重模型，推理留在自己的环境内（比赛数据安全条款，官方尚未正面澄清但高风险，应规避）。
 
 ### 10.4 Fold 泄漏检查
 
@@ -419,6 +422,8 @@ Other / unknown series
 
 ## 11. A6：T4 数据管线 Benchmark
 
+> Kaggle 官方已确认 `RuntimeSeconds`（效率赛道计分依据）是 notebook 从开始执行到结束的完整 wall time，包含包安装、模型加载、DICOM 读取在内的全部耗时，因此本节的所有计时必须覆盖到 notebook 启动阶段，不能只测"数据管线核心步骤"。详见 [Efficiency Experiment Plan 13.2 节](./RSNA-Knee-Efficiency-Experiment-Plan.md)的 T4 测速协议。
+
 ### 11.1 测试场景
 
 固定同一批至少覆盖 P50、P95 和最大 study 大小的样本，分别测试：
@@ -434,6 +439,8 @@ Other / unknown series
 
 ### 11.2 分项计时
 
+- 包导入/环境初始化；
+- 模型 checkpoint 加载；
 - 文件发现；
 - header 读取；
 - 几何排序；

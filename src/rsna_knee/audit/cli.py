@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .common import atomic_text_writer, get_or_create_patient_salt, json_dumps
+from .coverage import compute_coverage
 from .dicom import read_header_record
 from .index import build_file_index
 from .pixels import read_pixel_record_sampled
@@ -142,6 +143,15 @@ def _cmd_summarize(args: argparse.Namespace) -> None:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
+def _cmd_coverage(args: argparse.Namespace) -> None:
+    summary = compute_coverage(
+        args.audit_root,
+        train_csv=args.train_csv,
+        train_series_csv=args.train_series_csv,
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scalable RSNA knee DICOM audit")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -171,6 +181,14 @@ def build_parser() -> argparse.ArgumentParser:
     summary_parser.add_argument("--train-csv")
     summary_parser.add_argument("--train-series-csv")
     summary_parser.set_defaults(func=_cmd_summarize)
+
+    coverage_parser = subparsers.add_parser(
+        "coverage", help="Compare studies present on disk against train.csv, prioritizing gold labels"
+    )
+    coverage_parser.add_argument("--audit-root", required=True)
+    coverage_parser.add_argument("--train-csv", required=True)
+    coverage_parser.add_argument("--train-series-csv")
+    coverage_parser.set_defaults(func=_cmd_coverage)
     return parser
 
 

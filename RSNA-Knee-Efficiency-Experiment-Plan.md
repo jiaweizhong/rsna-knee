@@ -169,11 +169,15 @@ $$
 
 | 标签源 | 用途 | 训练权重 |
 |---|---|---:|
-| 官方完整人工标签 | 主要可信监督 | 3.0–8.0，作为消融变量 |
-| 高质量 LLM 报告软标签 | 大规模训练监督 | 按置信度加权 |
+| 官方完整人工标签（约 58 个 study，占全部约 4,407 个训练 study 的 1.3%） | 主要可信监督，仅用于校准/最终门槛，不作为架构选择的唯一依据 | 3.0–8.0，作为消融变量 |
+| 高质量本地 LLM 报告软标签 | 大规模训练监督，也是 Phase 2 backbone/架构排序的主要依据 | 按置信度加权 |
 | 多语言规则标签 | fallback/对照 | 按置信度加权 |
 
 标签实验必须先完成，不能在 backbone 实验中同时改变标签源。
+
+**已知的 gold 标签富集偏差**（社区论坛统计审计，非官方）：这 58 个 study 相对全部训练语料存在约 2× 的异常富集（骨折达 3.1×），12 类中 11 类方向一致。由此带来两个后果：(1) 从这 58 个 study 估计的患病率/阈值/类别权重会系统性偏"病情更重"，稀有标签先验（coverage loss 的 $w_j$、BCE pos_weight 等）应以全量约 4,407 study 的弱标签患病率为准，不用 58 个 gold study 的患病率校准；(2) 58 个 study 上测得的 $AUC_{gold}$ 大概率比私榜乐观，私榜分数低于 gold OOF 是预期内的，不代表模型退化。
+
+**报告标签抽取的合规约束**：训练集报告文本不得发送给商业 LLM API（OpenAI、Anthropic、Google 等，包括协作使用的 Claude）——多位参赛者认为这违反比赛数据安全条款，官方尚未正面澄清前应规避。标签抽取只使用本地/开源权重多语言模型（如 Qwen），推理留在自己的环境内。
 
 ### 4.3 验证指标
 
@@ -190,6 +194,20 @@ S_{select}=\min(AUC_{derived},AUC_{gold})
 $$
 
 该分数仅用于筛选实验，不视为 leaderboard 估计。
+
+#### 58-study 验证集的噪声下限（重要，决定判断阈值）
+
+社区对 58 个 gold study 做了配对模拟（20,000 次头对头比较），结论必须作为所有基于 $AUC_{gold}$ 判断的前提：
+
+- 两个模型相关度 ρ≈0.9（典型场景）时，配对标准差 σ≈0.0125；真实差距 0.005 只有约 66% 概率选对更优模型，0.01 约 79%，要到 0.02 才有约 94% 把握。
+- 可信度强烈依赖相关度：同 backbone 的近似模型比较（换 loss、换聚合头、换 seed，ρ→0.98）σ 降到约 0.006，更可信；跨架构族比较（backbone 之间互相比较，ρ→0）σ 升到约 0.026，同样 0.02 的差距也只有约 79% 把握。
+- 方差集中在样本量最小的标签列（如 MCL、Baker's）：这些列贡献了远超其权重占比的 macro AUC 方差，改善它们即使真实存在也更难被这份验证集看见。
+
+据此制定判断规则，全文档统一引用：
+
+- **消融类决策**（同 backbone/同 selector 家族内部的变体比较，如聚合头、loss、selector 变体）：只有当 $\Delta S_{select}$ 达到约 **0.01** 时才视为可信改进；小于这个量级的正向 delta 可以记录、可以保留（如果有工程/理论依据），但不能作为唯一晋级证据。
+- **架构类决策**（backbone 家族之间的比较，如 Phase 2）：单次 58-study 比较不可信，必须结合 derived-label（约 4,407 study）OOF 的排序趋势，并至少用 2 个 seed 复核，或要求差距 ≥0.02 才采信。
+- 任何声称的改进都应同时报告：delta 数值、该类比较对应的可信阈值、是否达标——不能只报告点估计。
 
 #### Selector 质量
 
@@ -224,7 +242,7 @@ $$
 
 候选进入下一阶段必须满足：
 
-1. 相对当前 baseline，$S_{select}$ 不下降超过 0.005；或显著减少 runtime 并位于 Pareto frontier。
+1. 相对当前 baseline，$S_{select}$ 不下降超过消融类噪声下限（约 0.01，见 4.3 节）；或显著减少 runtime 并位于 Pareto frontier。跨架构族比较（如 Phase 2）额外要求 derived-label OOF 排序方向一致，且至少 2 个 seed 复核。
 2. 任何单类 AUC 不得下降超过 0.03，除非该类人工样本不足且 CI 大量重叠。
 3. 端到端 1,300 studies 投影不超过 8 小时。
 4. 无 study/fold 泄漏、无报告在测试时输入、无 submission 缺失。
@@ -254,9 +272,9 @@ $$
 
 | ID | 标签/Teacher 配置 | 目的 |
 |---|---|---|
-| T1.0 | 仅人工标签 | 小样本下限 |
+| T1.0 | 仅人工标签（约 58 个 study） | 小样本下限；样本量对 12 类 macro AUC 而言极小、方差极大，预期明显劣于 T1.2+，仅作对照 |
 | T1.1 | 规则报告标签 | 低成本 baseline |
-| T1.2 | LLM 报告软标签 | 主标签候选 |
+| T1.2 | 本地/开源权重 LLM 报告软标签（不得使用商业 LLM API，见 4.2 节合规约束） | 主标签候选 |
 | T1.3 | LLM 软标签 + gold weight=3 | 权重消融 |
 | T1.4 | LLM 软标签 + gold weight=8 | 权重消融 |
 
@@ -282,6 +300,8 @@ Teacher 固定为高覆盖设置：5 个有效 slot、每 slot 8–12 个 window
 | B2.2 | DINOv3 ConvNeXt-Tiny | DINOv3 | 256 | 效率主候选 |
 | B2.3 | PVTv2-B0 | ImageNet | 224/256 | 分层 Transformer |
 | B2.4 | MedNeXt-lightweight | 从头/可用权重 | 224 | 探索项 |
+
+**方法论要求**：backbone 之间属于低相关（ρ≈0）比较，58 个 gold study 上的单次 AUC 差异不可信（见 4.3 节噪声下限）。本阶段的主要排序依据是 derived-label（约 4,407 study）OOF trend，至少 2 个 seed；gold OOF 只用于确认没有明显跑偏（例如某 backbone 在 gold 上崩掉但 derived 上正常，需要单独排查原因），不单独作为淘汰依据。
 
 ### 训练方式消融
 
@@ -407,7 +427,7 @@ Metadata FiLM 输入仅允许使用推理时存在的 metadata。报告文本及
 | A5.2 | slot embedding + per-label query |
 | A5.3 | plane-specific head 后再融合 |
 
-如果复杂聚合头相对 H5.2 的 Macro AUC 增益小于 0.003，优先保留 H5.2。
+如果复杂聚合头相对 H5.2 的 Macro AUC 增益小于消融类噪声下限（约 0.01，见 4.3 节；同 backbone 高相关比较），优先保留 H5.2。
 
 ## 12. Phase 6：训练目标与正则化消融
 
@@ -444,12 +464,14 @@ Metadata FiLM 输入仅允许使用推理时存在的 metadata。报告文本及
 
 ### 13.2 T4 测速协议
 
+Kaggle 官方已确认：GPU notebook 可参加效率赛道；`RuntimeSeconds` 是 notebook 从开始执行到结束的完整 wall time，包含包安装、模型加载、DICOM 读取在内的全部耗时。因此下面的分项计时必须覆盖到 notebook 启动阶段，不能只统计"核心推理"部分。
+
 1. 固定 Kaggle T4、相同容器、相同数据副本。
 2. 20 studies warm-up，不计时。
 3. 至少 200 studies 稳态计时；最终候选运行完整可用集合。
 4. 同时记录冷启动和稳态时间。
-5. 分别记录 DICOM I/O、selector、backbone、aggregation、CSV 写入。
-6. 报告 median、P95 和 1,300-study 投影。
+5. 分别记录包导入/环境初始化、模型 checkpoint 加载、DICOM I/O、selector、backbone、aggregation、CSV 写入。
+6. 报告 median、P95 和 1,300-study 投影，投影结果应以"完整 wall time 口径"汇总，与正式提交的计分方式一致。
 7. 动态方案必须与相同 K 的静态 dense batch 比较。
 
 ### 13.3 Efficiency Score 敏感性
@@ -501,7 +523,7 @@ $$
 
 ### Selector 失败
 
-若 Knee-BCRS 在 $K=15$ 时相对均匀采样 AUC 下降超过 0.005：
+若 Knee-BCRS 在 $K=15$ 时相对均匀采样 AUC 下降超过消融类噪声下限（约 0.01，见 4.3 节；uniform 和 Knee-BCRS 同 backbone，属于高相关比较）：
 
 1. 保留 uniform sampling；
 2. 将 selector 退化为训练期 attention regularizer；
@@ -549,10 +571,16 @@ aggregation_head:
 losses:
 trainable_blocks:
 seed:
+comparison_type: ablation|architecture
+baseline_experiment_id:
+delta_vs_baseline_derived:
+delta_vs_baseline_gold:
+noise_threshold_applied:
 oof_macro_auc_derived:
 oof_macro_auc_gold:
 per_label_auc:
 evidence_coverage_at_k:
+import_and_load_seconds:
 mean_seconds_per_study:
 p95_seconds_per_study:
 dicom_seconds:
