@@ -49,6 +49,21 @@ def _write_dicom(path: Path) -> None:
     dataset.save_as(path, enforce_file_format=True)
 
 
+def test_multi_value_keyword_normalized_to_list(tmp_path: Path) -> None:
+    path = tmp_path / "study" / "series" / "slice.dcm"
+    path.parent.mkdir(parents=True)
+    _write_dicom(path)
+    import pydicom
+
+    dataset = pydicom.dcmread(path, force=True)
+    dataset.ScanningSequence = "SE"  # single-valued on this file; VM 1-n in general
+    dataset.save_as(path, enforce_file_format=True)
+
+    header = read_header_record(str(path), "study/series/slice.dcm", patient_salt="salt")
+    assert header["status"] == "ok"
+    assert header["ScanningSequence"] == ["SE"]
+
+
 def test_header_and_pixel_audit(tmp_path: Path) -> None:
     path = tmp_path / "study" / "series" / "slice.dcm"
     path.parent.mkdir(parents=True)
@@ -103,6 +118,38 @@ def test_small_audit_pipeline(tmp_path: Path) -> None:
     assert summary["pixel_status_counts"] == {"ok": 3}
     assert (audit_root / "tables" / "series_inventory.parquet").exists()
     assert (audit_root / "audit_report.md").exists()
+
+
+def test_summarize_survives_mixed_scalar_and_list_columns(tmp_path: Path) -> None:
+    # Reproduces the real failure: ScanningSequence decodes to a bare string on some
+    # files and a list on others, which pyarrow refuses to write as one column.
+    audit_root = tmp_path / "audit"
+    headers_dir = audit_root / "headers"
+    headers_dir.mkdir(parents=True)
+    records = [
+        {
+            "relative_path": "study/series-0/a.dcm",
+            "status": "ok",
+            "StudyInstanceUID": "study",
+            "SeriesInstanceUID": "series-0",
+            "ScanningSequence": "SE",
+            "file_size_bytes": 10,
+        },
+        {
+            "relative_path": "study/series-1/b.dcm",
+            "status": "ok",
+            "StudyInstanceUID": "study",
+            "SeriesInstanceUID": "series-1",
+            "ScanningSequence": ["SE", "IR"],
+            "file_size_bytes": 20,
+        },
+    ]
+    (headers_dir / "part-00000.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+    summary = summarize_audit(audit_root)
+    assert summary["status_counts"] == {"ok": 2}
+    assert (audit_root / "tables" / "dicom_inventory_parts" / "part-00000.parquet").exists()
 
 
 def test_partitioned_header_stage_with_processes(tmp_path: Path) -> None:

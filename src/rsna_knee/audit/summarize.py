@@ -17,6 +17,19 @@ from rsna_knee.constants import LABEL_COLUMNS
 from .common import atomic_text_writer, iter_jsonl, list_part_files
 
 
+def _coerce_mixed_list_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """DICOM tags with VM 1-n (e.g. ScanningSequence, WindowCenter) decode to a bare
+    scalar on single-valued files and a list on multi-valued ones. Arrow can't write a
+    column that mixes the two, so force any column that does into list-or-None."""
+    for column in frame.columns:
+        series = frame[column]
+        has_list = series.map(lambda value: isinstance(value, list)).any()
+        has_scalar = series.map(lambda value: value is not None and not isinstance(value, list)).any()
+        if has_list and has_scalar:
+            frame[column] = series.map(lambda value: value if value is None or isinstance(value, list) else [value])
+    return frame
+
+
 class NumericSummary:
     def __init__(self, seed: int = 2026, reservoir_size: int = 100_000) -> None:
         self.count = 0
@@ -148,14 +161,31 @@ def _load_series_metadata(path: str | Path | None) -> dict[str, dict[str, Any]]:
     }
 
 
+def _bootstrap_ci(values: np.ndarray, num_resamples: int = 2000, seed: int = 2026) -> tuple[float, float]:
+    if values.size == 0:
+        return (float("nan"), float("nan"))
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(0, values.size, size=(num_resamples, values.size))
+    means = values[indices].mean(axis=1)
+    low, high = np.percentile(means, [2.5, 97.5])
+    return float(low), float(high)
+
+
 def _write_label_audit(train_csv: str | Path, tables_dir: Path) -> dict[str, Any]:
     frame = pd.read_csv(train_csv)
     present = [column for column in LABEL_COLUMNS if column in frame.columns]
     if not present:
         raise KeyError("No expected label columns found in train.csv")
+
+    numeric_frame = frame[present].apply(pd.to_numeric, errors="coerce")
+    is_gold = numeric_frame.notna().all(axis=1)
+    gold_frame = numeric_frame.loc[is_gold]
+
     rows = []
     for column in present:
-        numeric = pd.to_numeric(frame[column], errors="coerce")
+        numeric = numeric_frame[column]
+        gold_values = gold_frame[column].to_numpy(dtype=float)
+        ci_low, ci_high = _bootstrap_ci(gold_values)
         rows.append(
             {
                 "label": column,
@@ -163,12 +193,42 @@ def _write_label_audit(train_csv: str | Path, tables_dir: Path) -> dict[str, Any
                 "negative": int((numeric == 0).sum()),
                 "missing": int(numeric.isna().sum()),
                 "prevalence_observed": float(numeric.mean()) if numeric.notna().any() else None,
+                "prevalence_ci_low": ci_low if gold_values.size else None,
+                "prevalence_ci_high": ci_high if gold_values.size else None,
             }
         )
     pd.DataFrame(rows).to_parquet(tables_dir / "label_inventory.parquet", index=False)
-    correlations = frame[present].apply(pd.to_numeric, errors="coerce").corr()
+
+    correlations = numeric_frame.corr()
     correlations.to_csv(tables_dir / "label_correlation.csv")
-    return {"rows": len(frame), "label_columns": present, "labels": rows}
+
+    # Co-occurrence and Jaccard are computed on the gold-complete rows only: with
+    # non-gold rows entirely NaN, mixing them in would silently zero out every pair.
+    cooccurrence = pd.DataFrame(0, index=present, columns=present, dtype=int)
+    jaccard = pd.DataFrame(0.0, index=present, columns=present, dtype=float)
+    positive_masks = {column: (gold_frame[column] == 1) for column in present}
+    for a in present:
+        for b in present:
+            both = int((positive_masks[a] & positive_masks[b]).sum())
+            union = int((positive_masks[a] | positive_masks[b]).sum())
+            cooccurrence.loc[a, b] = both
+            jaccard.loc[a, b] = (both / union) if union else 0.0
+    cooccurrence.to_csv(tables_dir / "label_cooccurrence.csv")
+    jaccard.to_csv(tables_dir / "label_jaccard.csv")
+
+    positive_count_per_study = gold_frame.sum(axis=1)
+    positive_count_distribution = {
+        int(count): int(freq)
+        for count, freq in positive_count_per_study.value_counts().sort_index().items()
+    }
+
+    return {
+        "rows": len(frame),
+        "label_columns": present,
+        "labels": rows,
+        "gold_study_count": int(is_gold.sum()),
+        "positive_label_count_distribution": positive_count_distribution,
+    }
 
 
 def summarize_audit(
@@ -238,7 +298,7 @@ def summarize_audit(
                 study_series[study_uid].add(series_uid)
                 study_dicoms[study_uid] += 1
                 study_bytes[study_uid] += int(record.get("file_size_bytes") or 0)
-            frame = pd.DataFrame.from_records(part_records)
+            frame = _coerce_mixed_list_columns(pd.DataFrame.from_records(part_records))
             frame.to_parquet(parquet_parts / f"{part.stem}.parquet", index=False)
 
     series_rows = [
@@ -288,7 +348,7 @@ def summarize_audit(
                         }
                     )
             if records:
-                pd.DataFrame.from_records(records).to_parquet(
+                _coerce_mixed_list_columns(pd.DataFrame.from_records(records)).to_parquet(
                     pixel_parquet_parts / f"{part.stem}.parquet",
                     index=False,
                 )
@@ -315,6 +375,37 @@ def summarize_audit(
     )
     _write_report(root / "audit_report.md", summary)
     return summary
+
+
+def _label_report_lines(label_summary: dict[str, Any] | None) -> list[str]:
+    if not label_summary:
+        return []
+    lines = [
+        "## Labels",
+        "",
+        f"- Gold-labeled studies (all 12 labels present): "
+        f"{label_summary['gold_study_count']:,} / {label_summary['rows']:,}",
+        f"- Positive-label-count distribution (gold studies): "
+        f"`{json.dumps(label_summary['positive_label_count_distribution'])}`",
+        "",
+        "| label | positive | negative | missing | prevalence | 95% CI |",
+        "|---|---:|---:|---:|---:|---|",
+    ]
+    for row in label_summary["labels"]:
+        prevalence = (
+            f"{row['prevalence_observed']:.3f}" if row["prevalence_observed"] is not None else "n/a"
+        )
+        ci = (
+            f"[{row['prevalence_ci_low']:.3f}, {row['prevalence_ci_high']:.3f}]"
+            if row.get("prevalence_ci_low") is not None
+            else "n/a"
+        )
+        lines.append(
+            f"| {row['label']} | {row['positive']} | {row['negative']} | {row['missing']} "
+            f"| {prevalence} | {ci} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _write_report(path: Path, summary: dict[str, Any]) -> None:
@@ -344,6 +435,7 @@ def _write_report(path: Path, summary: dict[str, Any]) -> None:
         f"- Header seconds/file: `{json.dumps(summary['header_seconds'])}`",
         f"- Pixel decode seconds/file: `{json.dumps(summary['decode_seconds'])}`",
         "",
+        *_label_report_lines(summary.get("labels")),
         "## Critical checks",
         "",
         "- [ ] Pixel decode errors reviewed and handled.",

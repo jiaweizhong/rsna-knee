@@ -51,6 +51,18 @@ HEADER_KEYWORDS = [
     "Laterality",
 ]
 
+# DICOM tags with VM 1-n: decode to a bare scalar on single-valued files and a list
+# on multi-valued ones, which Arrow can't write as one parquet column. Normalized to
+# list-or-None below so every record has a consistent type regardless of file VM.
+MULTI_VALUE_KEYWORDS = {
+    "ScanningSequence",
+    "SequenceVariant",
+    "ScanOptions",
+    "WindowCenter",
+    "WindowWidth",
+    "SoftwareVersions",
+}
+
 
 def _safe_value(value: Any) -> Any:
     if value is None:
@@ -129,6 +141,9 @@ def read_header_record(
             specific_tags=HEADER_KEYWORDS,
         )
         values = {keyword: _safe_value(getattr(dataset, keyword, None)) for keyword in HEADER_KEYWORDS}
+        for keyword in MULTI_VALUE_KEYWORDS:
+            if values.get(keyword) is not None and not isinstance(values[keyword], list):
+                values[keyword] = [values[keyword]]
         plane, normal, position_scalar = derive_geometry(
             values.get("ImageOrientationPatient"), values.get("ImagePositionPatient")
         )
