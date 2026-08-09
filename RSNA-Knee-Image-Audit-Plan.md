@@ -611,6 +611,8 @@ Warning 不一定删除数据，但必须生成 flag，允许模型、fold 或 s
 
 ## 18. Decision Log 模板
 
+> 实际维护中的 decision log 见仓库根目录 [RSNA-Knee-Image-Audit-Decision-Log.md](./RSNA-Knee-Image-Audit-Decision-Log.md)（放在仓库根目录、纳入 git 版本控制，而不是 `artifacts/` 下——`artifacts/` 是可重新生成的审计产物，已经在实践中因为磁盘清理被删过一次；decision log 是人工判断的沉淀，不应该跟着产物一起被清掉）。下面是模板，供新建同类文档参考。
+
 ```markdown
 # Image Audit Decision Log
 

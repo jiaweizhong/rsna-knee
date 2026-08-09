@@ -78,6 +78,16 @@ class NumericSummary:
         return result
 
 
+def _spearman(x: list[float], y: list[float]) -> float | None:
+    if len(x) < 2:
+        return None
+    rank_x = pd.Series(x).rank().to_numpy()
+    rank_y = pd.Series(y).rank().to_numpy()
+    if np.std(rank_x) == 0 or np.std(rank_y) == 0:
+        return None
+    return float(np.corrcoef(rank_x, rank_y)[0, 1])
+
+
 @dataclass
 class SeriesAggregate:
     study_uid: str
@@ -88,7 +98,9 @@ class SeriesAggregate:
     error_count: int = 0
     positions: list[float] = field(default_factory=list)
     instance_numbers: list[float] = field(default_factory=list)
+    position_instance_pairs: list[tuple[float, float]] = field(default_factory=list)
     planes: Counter[str] = field(default_factory=Counter)
+    manufacturers: Counter[str] = field(default_factory=Counter)
     rows: Counter[str] = field(default_factory=Counter)
     columns: Counter[str] = field(default_factory=Counter)
     transfer_syntaxes: Counter[str] = field(default_factory=Counter)
@@ -103,6 +115,8 @@ class SeriesAggregate:
                 target[str(record[key])] += 1
         if record.get("derived_plane"):
             self.planes[str(record["derived_plane"])] += 1
+        if record.get("Manufacturer"):
+            self.manufacturers[str(record["Manufacturer"])] += 1
         if record.get("TransferSyntaxUID"):
             self.transfer_syntaxes[str(record["TransferSyntaxUID"])] += 1
         for key, target in [
@@ -115,6 +129,13 @@ class SeriesAggregate:
                     target.append(value)
             except (KeyError, TypeError, ValueError):
                 pass
+        try:
+            position_value = float(record["position_scalar"])
+            instance_value = float(record["InstanceNumber"])
+            if math.isfinite(position_value) and math.isfinite(instance_value):
+                self.position_instance_pairs.append((position_value, instance_value))
+        except (KeyError, TypeError, ValueError):
+            pass
 
     def result(self, series_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         sorted_positions = np.sort(np.asarray(self.positions, dtype=np.float64))
@@ -124,6 +145,11 @@ class SeriesAggregate:
         spacing_cv = None
         if abs_differences.size and float(abs_differences.mean()) > 1e-8:
             spacing_cv = float(abs_differences.std() / abs_differences.mean())
+        derived_plane_mode = self.planes.most_common(1)[0][0] if self.planes else "Unknown"
+        metadata_plane = (series_metadata or {}).get("Anatomical_Plane")
+        plane_conflict = bool(metadata_plane) and str(metadata_plane) != derived_plane_mode
+        paired_positions = [pair[0] for pair in self.position_instance_pairs]
+        paired_instances = [pair[1] for pair in self.position_instance_pairs]
         result = {
             "StudyInstanceUID": self.study_uid,
             "SeriesInstanceUID": self.series_uid,
@@ -135,7 +161,11 @@ class SeriesAggregate:
             "duplicate_position_count": int(len(sorted_positions) - len(np.unique(sorted_positions))),
             "spacing_median": spacing_median,
             "spacing_cv": spacing_cv,
-            "derived_plane_mode": self.planes.most_common(1)[0][0] if self.planes else "Unknown",
+            "derived_plane_mode": derived_plane_mode,
+            "manufacturer_mode": self.manufacturers.most_common(1)[0][0] if self.manufacturers else None,
+            "plane_conflict": plane_conflict,
+            "instance_geometry_spearman": _spearman(paired_positions, paired_instances),
+            "instance_geometry_pair_count": len(self.position_instance_pairs),
             "rows_unique": len(self.rows),
             "columns_unique": len(self.columns),
             "transfer_syntax_count": len(self.transfer_syntaxes),
@@ -171,7 +201,36 @@ def _bootstrap_ci(values: np.ndarray, num_resamples: int = 2000, seed: int = 202
     return float(low), float(high)
 
 
-def _write_label_audit(train_csv: str | Path, tables_dir: Path) -> dict[str, Any]:
+# DICOM Manufacturer is free text and varies by software era (e.g. "SIEMENS" vs
+# "Siemens Healthineers" are the same vendor). Raw values stay untouched everywhere
+# else; this grouping exists only to keep the domain-correlation buckets meaningful.
+_MANUFACTURER_FAMILIES = [
+    ("siemens", "Siemens"),
+    ("philips", "Philips"),
+    ("ge medical", "GE"),
+    ("gehc", "GE"),
+    ("toshiba", "Canon/Toshiba"),
+    ("canon", "Canon/Toshiba"),
+    ("fujifilm", "Fujifilm/Hitachi"),
+    ("hitachi", "Fujifilm/Hitachi"),
+]
+
+
+def _manufacturer_family(raw: str | None) -> str:
+    if not raw:
+        return "Unknown"
+    lowered = raw.lower()
+    for needle, family in _MANUFACTURER_FAMILIES:
+        if needle in lowered:
+            return family
+    return raw
+
+
+def _write_label_audit(
+    train_csv: str | Path,
+    tables_dir: Path,
+    study_domain: dict[str, str] | None = None,
+) -> dict[str, Any]:
     frame = pd.read_csv(train_csv)
     present = [column for column in LABEL_COLUMNS if column in frame.columns]
     if not present:
@@ -216,6 +275,36 @@ def _write_label_audit(train_csv: str | Path, tables_dir: Path) -> dict[str, Any
     cooccurrence.to_csv(tables_dir / "label_cooccurrence.csv")
     jaccard.to_csv(tables_dir / "label_jaccard.csv")
 
+    # Shortcut-risk check (Image-Audit-Plan 10.2): does label prevalence track scanner
+    # vendor. Gold n=58 split across domain buckets is too thin for a reliable odds
+    # ratio; this is a flag to revisit on the larger weak-label corpus, not a verdict.
+    domain_breakdown: dict[str, Any] | None = None
+    if study_domain and "StudyInstanceUID" in frame.columns:
+        gold_uids = frame.loc[is_gold, "StudyInstanceUID"].astype(str)
+        families = gold_uids.map(lambda uid: _manufacturer_family(study_domain.get(uid))).to_numpy()
+        domain_gold_frame = gold_frame.copy()
+        domain_gold_frame["_domain_family"] = families
+        domain_rows = []
+        for label in present:
+            for family, group in domain_gold_frame.groupby("_domain_family"):
+                n = len(group)
+                positive = int((group[label] == 1).sum())
+                domain_rows.append(
+                    {
+                        "label": label,
+                        "domain": family,
+                        "n": n,
+                        "positive": positive,
+                        "prevalence": (positive / n) if n else None,
+                    }
+                )
+        pd.DataFrame(domain_rows).to_csv(tables_dir / "label_domain_correlation.csv", index=False)
+        domain_breakdown = {
+            "caveat": "gold n=58 spread across domain buckets is too small for a reliable "
+            "odds ratio; use only as a shortcut-risk flag, recompute on the weak-label corpus.",
+            "rows": domain_rows,
+        }
+
     positive_count_per_study = gold_frame.sum(axis=1)
     positive_count_distribution = {
         int(count): int(freq)
@@ -228,6 +317,7 @@ def _write_label_audit(train_csv: str | Path, tables_dir: Path) -> dict[str, Any
         "labels": rows,
         "gold_study_count": int(is_gold.sum()),
         "positive_label_count_distribution": positive_count_distribution,
+        "domain_breakdown": domain_breakdown,
     }
 
 
@@ -260,6 +350,7 @@ def summarize_audit(
     study_series: defaultdict[str, set[str]] = defaultdict(set)
     study_dicoms: Counter[str] = Counter()
     study_bytes: Counter[str] = Counter()
+    study_manufacturers: defaultdict[str, Counter[str]] = defaultdict(Counter)
     series_metadata = _load_series_metadata(train_series_csv)
 
     failures_path = issues_dir / "header_failures.csv"
@@ -306,6 +397,8 @@ def summarize_audit(
                 study_series[study_uid].add(series_uid)
                 study_dicoms[study_uid] += 1
                 study_bytes[study_uid] += int(record.get("file_size_bytes") or 0)
+                if record.get("Manufacturer"):
+                    study_manufacturers[study_uid][str(record["Manufacturer"])] += 1
             frame = _coerce_mixed_list_columns(pd.DataFrame.from_records(part_records))
             frame.to_parquet(parquet_parts / f"{part.stem}.parquet", index=False)
 
@@ -325,6 +418,58 @@ def summarize_audit(
         slice_count_summary.add(row.get("dicom_count"))
         spacing_median_summary.add(row.get("spacing_median"))
         spacing_cv_summary.add(row.get("spacing_cv"))
+
+    # A2 ordering checks (Image-Audit-Plan 7.2): does InstanceNumber agree with the
+    # geometry-derived order, and does the dataset's own Anatomical_Plane label agree
+    # with the plane we derived from ImageOrientationPatient. Flagged rows, not deleted.
+    instance_geometry_spearman_summary = NumericSummary(seed=2033)
+    plane_conflict_count = 0
+    duplicate_position_series_count = 0
+    with atomic_text_writer(issues_dir / "geometry_failures.csv") as geometry_handle:
+        geometry_writer = csv.DictWriter(
+            geometry_handle,
+            fieldnames=[
+                "StudyInstanceUID",
+                "SeriesInstanceUID",
+                "issue",
+                "derived_plane_mode",
+                "metadata_plane",
+                "instance_geometry_spearman",
+                "duplicate_position_count",
+            ],
+        )
+        geometry_writer.writeheader()
+        for row in series_rows:
+            spearman = row.get("instance_geometry_spearman")
+            instance_geometry_spearman_summary.add(spearman)
+            issues = []
+            if row.get("plane_conflict"):
+                plane_conflict_count += 1
+                issues.append("plane_conflict")
+            if (row.get("duplicate_position_count") or 0) > 0:
+                duplicate_position_series_count += 1
+                issues.append("duplicate_position")
+            if spearman is not None and abs(spearman) < 0.9 and row.get("instance_geometry_pair_count", 0) >= 3:
+                issues.append("instance_number_disagrees_with_geometry")
+            if issues:
+                geometry_writer.writerow(
+                    {
+                        "StudyInstanceUID": row.get("StudyInstanceUID"),
+                        "SeriesInstanceUID": row.get("SeriesInstanceUID"),
+                        "issue": ";".join(issues),
+                        "derived_plane_mode": row.get("derived_plane_mode"),
+                        "metadata_plane": row.get("Anatomical_Plane"),
+                        "instance_geometry_spearman": spearman,
+                        "duplicate_position_count": row.get("duplicate_position_count"),
+                    }
+                )
+
+    study_manufacturer_mode: dict[str, str] = {
+        study_uid: counter.most_common(1)[0][0]
+        for study_uid, counter in study_manufacturers.items()
+        if counter
+    }
+
     study_rows = [
         {
             "StudyInstanceUID": study_uid,
@@ -371,7 +516,11 @@ def summarize_audit(
                     index=False,
                 )
 
-    label_summary = _write_label_audit(train_csv, tables_dir) if train_csv else None
+    label_summary = (
+        _write_label_audit(train_csv, tables_dir, study_domain=study_manufacturer_mode)
+        if train_csv
+        else None
+    )
     summary: dict[str, Any] = {
         "header_parts": len(header_parts),
         "status_counts": dict(status_counts),
@@ -388,6 +537,11 @@ def summarize_audit(
         "series_slice_count": slice_count_summary.result(),
         "series_spacing_median_mm": spacing_median_summary.result(),
         "series_spacing_cv": spacing_cv_summary.result(),
+        "geometry_issues": {
+            "plane_conflict_series": plane_conflict_count,
+            "duplicate_position_series": duplicate_position_series_count,
+            "instance_geometry_spearman": instance_geometry_spearman_summary.result(),
+        },
         "pixel_parts": len(pixel_parts),
         "pixel_status_counts": dict(pixel_status),
         "pixel_error_types": dict(pixel_errors),
@@ -429,6 +583,22 @@ def _label_report_lines(label_summary: dict[str, Any] | None) -> list[str]:
             f"| {prevalence} | {ci} |"
         )
     lines.append("")
+    domain = label_summary.get("domain_breakdown")
+    if domain:
+        lines += [
+            "### Label vs. scanner-vendor (shortcut-risk check)",
+            "",
+            f"> {domain['caveat']}",
+            "",
+            "| label | domain | n | positive | prevalence |",
+            "|---|---|---:|---:|---:|",
+        ]
+        for row in domain["rows"]:
+            prevalence = f"{row['prevalence']:.3f}" if row["prevalence"] is not None else "n/a"
+            lines.append(
+                f"| {row['label']} | {row['domain']} | {row['n']} | {row['positive']} | {prevalence} |"
+            )
+        lines.append("")
     return lines
 
 
@@ -459,6 +629,8 @@ def _write_report(path: Path, summary: dict[str, Any]) -> None:
         f"- Series slice count: `{json.dumps(summary['series_slice_count'])}`",
         f"- Series spacing median (mm): `{json.dumps(summary['series_spacing_median_mm'])}`",
         f"- Series spacing CV: `{json.dumps(summary['series_spacing_cv'])}`",
+        f"- Geometry issues: `{json.dumps(summary['geometry_issues'])}`"
+        " (see issues/geometry_failures.csv for the flagged series)",
         "",
         "## Performance",
         "",

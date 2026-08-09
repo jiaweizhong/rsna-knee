@@ -8,7 +8,7 @@
 - 支持固定预算 Top-K、Knee-BCRS coverage loss、AMP 和 `torchrun` DDP；
 - 生成可追踪的消融配置矩阵。
 
-详细审计规范见 [RSNA-Knee-Image-Audit-Plan.md](RSNA-Knee-Image-Audit-Plan.md)，总体实验顺序见 [RSNA-Knee-Efficiency-Experiment-Plan.md](RSNA-Knee-Efficiency-Experiment-Plan.md)。
+详细审计规范见 [RSNA-Knee-Image-Audit-Plan.md](RSNA-Knee-Image-Audit-Plan.md)，总体实验顺序见 [RSNA-Knee-Efficiency-Experiment-Plan.md](RSNA-Knee-Efficiency-Experiment-Plan.md)，当前审计进度和已有结论见 [RSNA-Knee-Image-Audit-Decision-Log.md](RSNA-Knee-Image-Audit-Decision-Log.md)。
 
 ## 1. 安装
 
