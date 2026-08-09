@@ -251,8 +251,11 @@ def summarize_audit(
     error_types: Counter[str] = Counter()
     plane_counts: Counter[str] = Counter()
     transfer_counts: Counter[str] = Counter()
+    manufacturer_counts: Counter[str] = Counter()
+    model_counts: Counter[str] = Counter()
     header_time = NumericSummary(seed=2026)
     file_size = NumericSummary(seed=2027)
+    field_strength = NumericSummary(seed=2029)
     series: dict[tuple[str, str], SeriesAggregate] = {}
     study_series: defaultdict[str, set[str]] = defaultdict(set)
     study_dicoms: Counter[str] = Counter()
@@ -287,6 +290,11 @@ def summarize_audit(
                 plane_counts[str(record.get("derived_plane", "Unknown"))] += 1
                 if record.get("TransferSyntaxUID"):
                     transfer_counts[str(record["TransferSyntaxUID"])] += 1
+                if record.get("Manufacturer"):
+                    manufacturer_counts[str(record["Manufacturer"])] += 1
+                if record.get("ManufacturerModelName"):
+                    model_counts[str(record["ManufacturerModelName"])] += 1
+                field_strength.add(record.get("MagneticFieldStrength"))
                 study_uid = str(record.get("StudyInstanceUID") or record.get("path_study_uid") or "")
                 series_uid = str(record.get("SeriesInstanceUID") or record.get("path_series_uid") or "")
                 if not study_uid or not series_uid:
@@ -307,6 +315,16 @@ def summarize_audit(
     ]
     series_frame = pd.DataFrame.from_records(series_rows)
     series_frame.to_parquet(tables_dir / "series_inventory.parquet", index=False)
+
+    # Geometry stats needed for the 2D/2.5D/3D call (Image-Audit-Plan 13.1): how
+    # consistent is inter-slice spacing, and how many slices does a series actually have.
+    slice_count_summary = NumericSummary(seed=2030)
+    spacing_median_summary = NumericSummary(seed=2031)
+    spacing_cv_summary = NumericSummary(seed=2032)
+    for row in series_rows:
+        slice_count_summary.add(row.get("dicom_count"))
+        spacing_median_summary.add(row.get("spacing_median"))
+        spacing_cv_summary.add(row.get("spacing_cv"))
     study_rows = [
         {
             "StudyInstanceUID": study_uid,
@@ -360,10 +378,16 @@ def summarize_audit(
         "error_types": dict(error_types),
         "plane_counts": dict(plane_counts),
         "transfer_syntax_counts": dict(transfer_counts),
+        "manufacturer_counts": dict(manufacturer_counts),
+        "manufacturer_model_counts": dict(model_counts),
+        "magnetic_field_strength_tesla": field_strength.result(),
         "header_seconds": header_time.result(),
         "file_size_bytes": file_size.result(),
         "studies": len(study_rows),
         "series": len(series_rows),
+        "series_slice_count": slice_count_summary.result(),
+        "series_spacing_median_mm": spacing_median_summary.result(),
+        "series_spacing_cv": spacing_cv_summary.result(),
         "pixel_parts": len(pixel_parts),
         "pixel_status_counts": dict(pixel_status),
         "pixel_error_types": dict(pixel_errors),
@@ -429,6 +453,12 @@ def _write_report(path: Path, summary: dict[str, Any]) -> None:
         "",
         f"- Derived planes: `{json.dumps(summary['plane_counts'], ensure_ascii=False)}`",
         f"- Transfer syntaxes: `{json.dumps(summary['transfer_syntax_counts'], ensure_ascii=False)}`",
+        f"- Manufacturers: `{json.dumps(summary['manufacturer_counts'], ensure_ascii=False)}`",
+        f"- Manufacturer models: `{json.dumps(summary['manufacturer_model_counts'], ensure_ascii=False)}`",
+        f"- Magnetic field strength (Tesla): `{json.dumps(summary['magnetic_field_strength_tesla'])}`",
+        f"- Series slice count: `{json.dumps(summary['series_slice_count'])}`",
+        f"- Series spacing median (mm): `{json.dumps(summary['series_spacing_median_mm'])}`",
+        f"- Series spacing CV: `{json.dumps(summary['series_spacing_cv'])}`",
         "",
         "## Performance",
         "",
