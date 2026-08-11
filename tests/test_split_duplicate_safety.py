@@ -30,19 +30,27 @@ def _unlabeled_record(study_id: str, patient_hash: str) -> dict:
 
 
 def test_sparse_gold_labels_do_not_strand_a_fold_empty() -> None:
-    # Reproduces the real failure: with only a small labeled subset (here 10 of
-    # 210) among mostly zero-label studies, a single label/size cost tended to trap
-    # whichever fold fell behind on labels early and it never received *any*
-    # further studies, labeled or not.
-    records = [_record(f"gold-{i}", f"gold-patient-{i}", i % 12) for i in range(10)]
-    records += [_unlabeled_record(f"plain-{i}", f"plain-patient-{i}") for i in range(200)]
+    # Reproduces the real failure at roughly real scale: 58 gold-labeled studies
+    # among ~2,700 total (the actual RSNA train split). A single label/size cost
+    # trapped whichever fold fell behind on labels early so it never received any
+    # further studies at all, labeled or not.
+    records = [_record(f"gold-{i}", f"gold-patient-{i}", i % 12) for i in range(58)]
+    records += [_unlabeled_record(f"plain-{i}", f"plain-patient-{i}") for i in range(2656)]
     assignments = assign_grouped_multilabel_folds(records, folds=5, seed=7)
     counts = [0] * 5
-    for fold in assignments.values():
+    gold_counts = [0] * 5
+    for study_id, fold in assignments.items():
         counts[fold] += 1
+        if study_id.startswith("gold-"):
+            gold_counts[fold] += 1
     assert sum(counts) == len(records)
     assert min(counts) > 0, f"a fold ended up empty: {counts}"
     assert max(counts) - min(counts) <= 10, f"folds are unevenly sized: {counts}"
+    # This is the part that actually broke: overall size balanced out fine while
+    # every gold study piled into 3 of the 5 folds, leaving 2 folds with zero gold
+    # signal to validate against.
+    assert min(gold_counts) > 0, f"a fold got zero gold-labeled studies: {gold_counts}"
+    assert max(gold_counts) - min(gold_counts) <= 6, f"gold studies are unevenly spread: {gold_counts}"
 
 
 def test_duplicate_edge_forces_same_fold_across_different_patients() -> None:

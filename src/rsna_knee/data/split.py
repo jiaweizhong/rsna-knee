@@ -136,22 +136,29 @@ def assign_grouped_multilabel_folds(
 
     fold_labels = np.zeros((folds, len(LABEL_COLUMNS)), dtype=np.float64)
     fold_sizes = np.zeros(folds, dtype=np.float64)
+    fold_gold_counts = np.zeros(folds, dtype=np.int64)
     assignments: dict[str, int] = {}
 
-    # Phase 1: place every group that carries at least one positive label,
-    # balancing purely on label totals. Only ~1-2% of studies are gold-labeled in
-    # this dataset; if label and size costs compete from the start, whichever fold
-    # falls behind on labels early never recovers (its relative label deviation
-    # stays near the maximum no matter how many zero-label studies land there
-    # later), and it ends up empty. Label balance and size balance are solved as
-    # two separate passes instead.
+    # Phase 1: place every group that carries at least one positive label. A
+    # weighted label_cost + count_cost sum was tried here first and didn't hold:
+    # with target_labels this small (single digits, sometimes under 1), the
+    # relative-deviation label_cost has a much steeper gradient than any
+    # reasonably-scaled count penalty, so a fold that gets a head start keeps
+    # winning on cost and some folds never receive a single labeled group (58
+    # gold studies landed in only 3 of 5 folds in the real run). Ranking by
+    # fold_gold_counts *first* and using label_cost only to break ties among
+    # equally-full folds gives a hard, scale-independent guarantee instead: no
+    # fold's labeled-group count can differ from another's by more than 1. Size
+    # balance for the (much larger) unlabeled pool is handled separately in phase
+    # 2 below, once every fold already has its fair share of labeled groups.
     for items, labels, _priority in labeled:
-        costs = [
+        label_costs = [
             float(np.mean(((fold_labels[fold] + labels - target_labels) / np.maximum(target_labels, 1.0)) ** 2))
             for fold in range(folds)
         ]
-        chosen = min(range(folds), key=lambda fold: (costs[fold], fold_sizes[fold], fold))
+        chosen = min(range(folds), key=lambda fold: (fold_gold_counts[fold], label_costs[fold], fold))
         fold_labels[chosen] += labels
+        fold_gold_counts[chosen] += 1
         fold_sizes[chosen] += len(items)
         for record in items:
             assignments[str(record["study_id"])] = chosen
