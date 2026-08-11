@@ -25,7 +25,7 @@
   1. 第一版跑出来 5 折里有 **2 折分到 0 个 study**——标签极度稀疏（58/2,714 有 gold 标签）时，"标签平衡"和"数量平衡"用同一个加权 cost 竞争，某个 fold 早期没分到任何带标签的 study 后，它的相对标签偏差卡在接近最大值、不随后续无标签 study 涌入而改善，而 size_cost 权重不足以覆盖这个惩罚，该 fold 被永久跳过。**修复**：拆成两阶段，先按标签平衡贪心分配有标签的 group，再按纯数量平衡分配无标签 group。
   2. 两阶段修复后总体数量平衡了（543/543/543/543/542），但**58 个 gold study 全部挤进了 3 个 fold，另外 2 个 fold 一个 gold study 都没有**——同样的问题换了个层面重演：给"每个 fold 已有 gold group 数"加权重（0.25）想拉平分布，权重还是压不过 label_cost 在 target 值只有个位数时极陡的梯度。**修复**：改成按"每个 fold 已有 gold group 数"**字典序优先排序**（谁少给谁），label_cost 只作为同优先级下的次要 tiebreak——这是硬约束（任意两个 fold 的 gold 数量差不超过 1），不是可能在别的数据规模下失效的权重调参。
   
-  两次修复都已在真实数据上验证：`verify_fold_disjointness()` 确认 `patient_hash_disjoint`、`duplicate_group_disjoint` 均为 `true`；回归测试用真实规模（58/2,714）复现两种 bug 形状并断言不再出现空 fold、gold 分布不再失衡。
+  两次修复都已在真实数据上验证：`studies` 均衡为 543/543/543/543/542；`verify_fold_disjointness()` 确认 `patient_hash_disjoint`、`duplicate_group_disjoint` 均为 `true`；5 个 fold 里 12 类标签基本都有正样本覆盖，唯一的例外是 fold 2 的 MCL=0——这**不是算法 bug**，MCL 总共只有 9 个 gold 正样本分到 5 折，平均不到 2 个，某折出现 0 属于小样本下的正常统计波动，gold study 本身的数量分布已经完全均衡（每折 ~11-12 个）。回归测试用真实规模（58/2,714）复现两种 bug 形状并断言不再出现空 fold、gold 分布不再失衡。**fold 划分现在可以视为可用产出**，后续训练/消融实验可以直接读取 `artifacts/manifests/folds/`。
 - **quarantine/fallback policy**：**已实现**。`summarize_audit` 现在会把 header 解析失败和 pixel 解码失败的文件统一汇总进 `issues/quarantine_candidates.csv`（含 `relative_path`、`StudyInstanceUID`、失败阶段、错误信息），`audit_summary.json` 里有 `quarantine_candidate_count` 计数。目前已知 3 个文件（真实像素数据损坏）。**训练代码侧的显式排除逻辑还没写**——现在只是"有一份清单"，还没有人在数据加载路径里真正读取并跳过这份清单。
 
 ## Runtime
