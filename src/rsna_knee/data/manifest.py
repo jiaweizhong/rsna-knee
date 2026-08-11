@@ -23,6 +23,7 @@ def _number(value: Any) -> float | None:
 
 
 def _create_slice_db(audit_root: Path, database_path: Path, rebuild: bool) -> sqlite3.Connection:
+    database_path.parent.mkdir(parents=True, exist_ok=True)
     if rebuild and database_path.exists():
         database_path.unlink()
     connection = sqlite3.connect(database_path)

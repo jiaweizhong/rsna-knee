@@ -62,6 +62,34 @@ def test_build_study_manifest_orders_slices_and_builds_windows(tmp_path: Path) -
     assert record["labels"][0] == 1.0
 
 
+def test_build_study_manifest_creates_missing_output_directory(tmp_path: Path) -> None:
+    # Regression test: sqlite3.connect() cannot create a database file inside a
+    # directory that doesn't exist yet, and the real CLI usage
+    # (--output artifacts/manifests/all_train.jsonl) routinely points at a fresh
+    # artifacts/manifests/ directory that nothing has created before this runs.
+    audit_root = tmp_path / "audit"
+    headers = audit_root / "headers"
+    headers.mkdir(parents=True)
+    record = {
+        "status": "ok",
+        "StudyInstanceUID": "study-1",
+        "SeriesInstanceUID": "series-1",
+        "SOPInstanceUID": "sop-0",
+        "relative_path": "study-1/series-1/slice-0.dcm",
+        "position_scalar": 0.0,
+        "InstanceNumber": 0,
+        "derived_plane": "Sagittal",
+        "patient_hash": "patient-1",
+    }
+    (headers / "part-00000.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    output = tmp_path / "artifacts" / "manifests" / "all_train.jsonl"
+    assert not output.parent.exists()
+    summary = build_study_manifest(audit_root, output, max_windows_per_series=1)
+    assert summary == {"studies": 1, "series": 1, "windows": 1}
+    assert output.exists()
+
+
 def test_patient_grouped_split_has_no_patient_overlap(tmp_path: Path) -> None:
     manifest = tmp_path / "all.jsonl"
     records = []
