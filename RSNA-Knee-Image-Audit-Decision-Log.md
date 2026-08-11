@@ -20,8 +20,9 @@
 - **domain SSL decision**：**建议做 domain SSL pilot**（Image-Audit-Plan 13.3）。依据是真实 header 统计：厂商分布 Siemens 系约 43%、Philips 系约 31%、GE 系约 21%、Toshiba/Canon 约 4.5%（45 个不同型号），场强明显双峰于 1.5T 和 3.0T——域差异是真实存在的，不是猜测。
 - **标签-域 shortcut 检查**：**已跑出真实数字**（58 个 gold study 分布：Siemens 22 / Philips 18 / GE 16 / Canon-Toshiba 2）。大部分标签在 GE/Philips/Siemens 三家之间的差距在小样本噪声量级内。**唯一值得关注的信号：Baker's 囊肿在 GE 上是 0/16（0%），Philips 22.2%，Siemens 31.8%**——16 个 study 零阳性，若真实患病率约 20%，纯属巧合的概率约 2.8%，有一定但不确定的证据强度。Medial/Lateral OA、Lateral Meniscus 上 Siemens 也有弱的系统性偏高模式（约 2 倍于 GE/Philips）。**结论：不算确凿证据（gold n 太小，Canon/Toshiba n=2 完全不可用），但 Baker's 囊肿这一项值得在报告弱标签语料（全量 4,407 study）建好后优先复核，选 backbone/aggregation 时如果 Baker's 类的表现在验证集上异常好或异常差，先检查是不是被 scanner 分布带偏。
 - **report multimodal decision（报告弱标签）**：抽取方式定为**本地规则匹配**（用户确认没有本地 LLM 环境，暂不用开源模型路线）。报告原文不得发送给任何商业 LLM API（含 Claude），已写入三个计划文档作为合规约束。规则匹配的具体实现**还没开始写**。
-- **fold grouping**：未生成。`patient_hash`（salted SHA256，header 阶段已计算）是生成 patient-grouped fold 的必要材料，已经就绪，但 `data/split.py` 没有针对真实数据跑过，10.4 节要求的"跨 fold 交集为 0"断言没有验证过。
-- **quarantine/fallback policy**：3 个文件确认为真实像素数据损坏（"字节数少于预期"，`issues/decode_failures.csv` 里有具体路径），当前只是"跳过 + 记录"，还没有正式的 `quarantine_candidates.csv` 和训练时的显式排除逻辑。
+- **duplicate detection（AUD-04）**：**已实现，工具就绪，尚未在真实数据上跑出结果**（`rsna-knee-audit duplicates`）。目前是三层**精确匹配**：SOPInstanceUID 复用、像素字节完全相同（复用 `--hash-pixels` 已经算好的 `pixel_sha256`）、series 首/中/尾切片哈希签名相同。**明确不做的事**：感知/模糊哈希（pHash）近重复检测——同一次扫描重新导出但重新压缩/重采样过，不会被现在的方法抓到，这是有意的范围缩减，不是遗漏，需要在决定要不要投入这部分工作前跟数据实际情况对照。
+- **fold grouping**：**已实现，工具就绪，尚未在真实数据上跑出结果**。`data/split.py` 现在用 union-find 把 `patient_hash` 分组和 duplicate-study 边（来自 `duplicates.py`）合并成统一的 group——两个 study 只要 `patient_hash` 相同，或者被判定为精确重复，就必须分到同一个 fold，即使它们的 `patient_hash` 不同。`verify_fold_disjointness()` 显式检查 patient_hash 和重复组是否跨 fold 相交，写进 `diagnostics.json` 的 `disjointness` 字段；CLI 版本（`python -m rsna_knee.data.split`）如果检测到泄漏会直接非零退出，不会静默产出不安全的 fold。单元测试覆盖了"跨 patient_hash 的重复必须同 fold"和"故意制造泄漏必须被抓到"两种场景。
+- **quarantine/fallback policy**：**已实现**。`summarize_audit` 现在会把 header 解析失败和 pixel 解码失败的文件统一汇总进 `issues/quarantine_candidates.csv`（含 `relative_path`、`StudyInstanceUID`、失败阶段、错误信息），`audit_summary.json` 里有 `quarantine_candidate_count` 计数。目前已知 3 个文件（真实像素数据损坏）。**训练代码侧的显式排除逻辑还没写**——现在只是"有一份清单"，还没有人在数据加载路径里真正读取并跳过这份清单。
 
 ## Runtime
 
@@ -34,11 +35,11 @@
 | 问题 | 影响范围 | 处理建议 | 状态 |
 |---|---|---|---|
 | Transfer syntax 100% 为单一值（Explicit VR Little Endian） | 基于 61.6% 样本 | 可能是选择偏差——剩余 38.4% 未解压数据可能包含 JPEG Lossless/2000/Implicit VR；数据补充后必须复核，现在不能得出"不需要 JPEG decoder"的结论 | 待复核 |
-| 3 个文件 pixel 数据真实损坏 | 3/504,613（0.0006%） | 加入正式 quarantine 名单，训练前排除 | 已定位，未正式 quarantine |
+| 3 个文件 pixel 数据真实损坏 | 3/504,613（0.0006%） | 已进入 `issues/quarantine_candidates.csv`；训练代码侧还没有读取这份清单并跳过的逻辑 | 名单已生成，训练侧集成未做 |
 | MagneticFieldStrength 约 3.8% 缺失 | ~1.9 万 / 504,613 条记录 | 可用同 series 内其他文件回填，不能假设每条记录都有该字段 | 已知，待处理 |
 | Manufacturer 字符串未归一化 | 全部 header 记录 | `_manufacturer_family()` 仅在 label-domain 检查里做了粗粒度分组；`series_inventory.parquet` 等其他产物仍是原始字符串，下游使用时需注意 | 部分处理 |
 | Geometry 一致性检查（plane 冲突/重复位置/InstanceNumber 不一致） | 15,019 series 全量 | 三项全部为 0，无需处理 | **已完成，结果干净** |
 | Baker's 囊肿 prevalence 在 GE 上为 0/16，Philips/Siemens 为 22–32% | 58 个 gold study 里的 GE 子集（n=16） | 报告弱标签语料建好后在全量 4,407 study 上复核；backbone/selector 筛选时如果 Baker's 这一类指标异常，先排查 scanner 分布 | 已识别，待全量复核 |
-| Fold 划分与 patient/duplicate 泄漏断言未执行 | 未知 | `patient_hash` 已就绪，需要跑 `data/split.py` 并验证 10.4 节的不相交断言 | 未开始 |
+| Fold 划分与 patient/duplicate 泄漏断言尚未在真实数据上跑出结果 | 未知 | `data/split.py` 已支持 union-find 合并分组 + 不相交断言，代码和单元测试都就绪，需要先跑 `duplicates`、再跑 `manifest`/`split` 拿到真实 `diagnostics.json` | 工具就绪，待运行 |
 | 报告弱标签抽取（规则匹配）未实现 | 全部约 4,349 个非 gold study | 用户确认走规则匹配路线（无本地 LLM），需要单独实现，并按主办方澄清的"模糊即阴性"规则设计 | 未开始 |
-| 重复检测（UID 级 / 像素哈希级 / 近重复 pHash 级）未实现 | 全部数据 | 目前只有 series 内部位置重复的窄 proxy；fold 划分前如果跳过这步，有 leakage 风险 | 未开始 |
+| 重复检测目前只做精确匹配，不含感知/模糊哈希（pHash）近重复 | 全部数据 | UID 级、像素字节级、series 签名级三层已实现；同一次扫描被重新压缩/重采样后再次出现的情况抓不到，是否需要补这块要看实际数据里这类情况是否存在 | 精确匹配已实现，模糊匹配未实现（有意范围缩减） |

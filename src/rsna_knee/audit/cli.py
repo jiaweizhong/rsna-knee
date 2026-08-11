@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable
 from .common import atomic_text_writer, get_or_create_patient_salt, json_dumps
 from .coverage import compute_coverage
 from .dicom import read_header_record
+from .duplicates import compute_duplicates
 from .index import build_file_index
 from .pixels import read_pixel_record_sampled
 from .summarize import summarize_audit
@@ -152,6 +153,11 @@ def _cmd_coverage(args: argparse.Namespace) -> None:
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
+def _cmd_duplicates(args: argparse.Namespace) -> None:
+    summary = compute_duplicates(args.audit_root)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scalable RSNA knee DICOM audit")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -189,6 +195,14 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_parser.add_argument("--train-csv", required=True)
     coverage_parser.add_argument("--train-series-csv")
     coverage_parser.set_defaults(func=_cmd_coverage)
+
+    duplicates_parser = subparsers.add_parser(
+        "duplicates",
+        help="Find exact-match duplicates (SOP UID reuse, identical pixel bytes, identical series "
+        "signature); requires summarize to have run first",
+    )
+    duplicates_parser.add_argument("--audit-root", required=True)
+    duplicates_parser.set_defaults(func=_cmd_duplicates)
     return parser
 
 

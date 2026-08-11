@@ -353,6 +353,8 @@ def summarize_audit(
     study_manufacturers: defaultdict[str, Counter[str]] = defaultdict(Counter)
     series_metadata = _load_series_metadata(train_series_csv)
 
+    quarantine_rows: list[dict[str, Any]] = []
+
     failures_path = issues_dir / "header_failures.csv"
     with atomic_text_writer(failures_path) as failure_handle:
         failure_writer = csv.DictWriter(
@@ -374,6 +376,16 @@ def summarize_audit(
                     failure_writer.writerow(
                         {
                             "relative_path": record.get("relative_path"),
+                            "error_type": error_type,
+                            "error_message": record.get("error_message"),
+                        }
+                    )
+                    relative_path = str(record.get("relative_path") or "")
+                    quarantine_rows.append(
+                        {
+                            "relative_path": relative_path,
+                            "StudyInstanceUID": Path(relative_path).parts[0] if relative_path else None,
+                            "stage": "header",
                             "error_type": error_type,
                             "error_message": record.get("error_message"),
                         }
@@ -510,11 +522,33 @@ def summarize_audit(
                             "error_message": record.get("error_message"),
                         }
                     )
+                    relative_path = str(record.get("relative_path") or "")
+                    quarantine_rows.append(
+                        {
+                            "relative_path": relative_path,
+                            "StudyInstanceUID": Path(relative_path).parts[0] if relative_path else None,
+                            "stage": "pixel",
+                            "error_type": error_type,
+                            "error_message": record.get("error_message"),
+                        }
+                    )
             if records:
                 _coerce_mixed_list_columns(pd.DataFrame.from_records(records)).to_parquet(
                     pixel_parquet_parts / f"{part.stem}.parquet",
                     index=False,
                 )
+
+    # Critical-severity closure (Image-Audit-Plan section 14): every file that failed
+    # header parsing or pixel decode goes on the quarantine list so training code has
+    # one place to check, instead of re-deriving it from the two failure CSVs.
+    with atomic_text_writer(issues_dir / "quarantine_candidates.csv") as quarantine_handle:
+        quarantine_writer = csv.DictWriter(
+            quarantine_handle,
+            fieldnames=["relative_path", "StudyInstanceUID", "stage", "error_type", "error_message"],
+        )
+        quarantine_writer.writeheader()
+        for row in quarantine_rows:
+            quarantine_writer.writerow(row)
 
     label_summary = (
         _write_label_audit(train_csv, tables_dir, study_domain=study_manufacturer_mode)
@@ -545,6 +579,7 @@ def summarize_audit(
         "pixel_parts": len(pixel_parts),
         "pixel_status_counts": dict(pixel_status),
         "pixel_error_types": dict(pixel_errors),
+        "quarantine_candidate_count": len(quarantine_rows),
         "decode_seconds": decode_time.result(),
         "labels": label_summary,
     }

@@ -80,14 +80,25 @@ python -m rsna_knee.data.manifest \
 
 manifest 只保存相对路径、几何位置、series metadata 和标签，不复制 DICOM 像素。训练/验证 fold 应在 patient/duplicate-safe split 完成后分别输出 manifest；当前命令生成的是全量基础 manifest。
 
-生成 patient-grouped multilabel folds：
+在生成 fold 之前先跑重复检测（要求 `summarize` 已经跑过，依赖它写出的 `tables/dicom_inventory_parts` 和 `tables/pixel_inventory_parts`）：
+
+```bash
+python -m rsna_knee.audit.cli duplicates --audit-root artifacts/audit/train
+```
+
+这一步做的是**精确匹配**级别的重复检测：SOPInstanceUID 复用、像素字节完全相同、series 首/中/尾切片哈希签名相同——不是模糊/感知哈希（pHash）级别的近重复检测，那个还没实现。输出 `tables/suspected_duplicates.parquet`（明细）和 `issues/suspected_duplicate_studies.csv`（跨 study 的重复边，供下一步用）。
+
+生成 patient-grouped multilabel folds（`--duplicate-edges` 可选，但强烈建议带上——没有它的话，同一份影像换个 UID 出现两次时，只按 `patient_hash` 分组可能仍然跨 fold 泄漏）：
 
 ```bash
 python -m rsna_knee.data.split \
   --manifest artifacts/manifests/all_train.jsonl \
   --output-dir artifacts/manifests/folds \
-  --folds 5
+  --folds 5 \
+  --duplicate-edges artifacts/audit/train/issues/suspected_duplicate_studies.csv
 ```
+
+`diagnostics.json` 里的 `disjointness` 字段报告 patient_hash 和重复组是否跨 fold 相交；命令行版本发现泄漏会直接以非零退出码失败（`SystemExit`），不会静默生成一份不安全的 fold。
 
 生成确定性 study montages：
 
