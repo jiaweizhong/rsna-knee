@@ -117,31 +117,52 @@ def assign_grouped_multilabel_folds(
         groups[group].append(record)
     total_labels = sum((_label_vector(record) for record in records), np.zeros(len(LABEL_COLUMNS)))
     target_labels = total_labels / folds
-    target_size = len(records) / folds
     rarity = 1.0 / np.maximum(total_labels, 1.0)
     random_generator = random.Random(seed)
-    ordered = []
-    for group, items in groups.items():
+
+    labeled: list[tuple[list[dict[str, Any]], np.ndarray, float]] = []
+    unlabeled: list[list[dict[str, Any]]] = []
+    for items in groups.values():
         labels = np.maximum.reduce([_label_vector(item) for item in items])
-        priority = float(np.sum(labels * rarity)) + 0.01 * len(items)
-        ordered.append((group, items, labels, priority, random_generator.random()))
-    ordered.sort(key=lambda item: (-item[3], item[4]))
+        if np.any(labels > 0):
+            priority = float(np.sum(labels * rarity))
+            labeled.append((items, labels, priority))
+        else:
+            unlabeled.append(items)
+    # Tie-break with the seeded RNG so equal-priority groups don't always land in
+    # study_id iteration order.
+    labeled.sort(key=lambda entry: (-entry[2], random_generator.random()))
+    random_generator.shuffle(unlabeled)
 
     fold_labels = np.zeros((folds, len(LABEL_COLUMNS)), dtype=np.float64)
     fold_sizes = np.zeros(folds, dtype=np.float64)
     assignments: dict[str, int] = {}
-    for _, items, labels, _, _ in ordered:
-        costs = []
-        for fold in range(folds):
-            proposed_labels = fold_labels[fold] + labels
-            label_cost = np.mean(((proposed_labels - target_labels) / np.maximum(target_labels, 1.0)) ** 2)
-            size_cost = ((fold_sizes[fold] + len(items) - target_size) / max(target_size, 1.0)) ** 2
-            costs.append(float(label_cost + 0.25 * size_cost))
+
+    # Phase 1: place every group that carries at least one positive label,
+    # balancing purely on label totals. Only ~1-2% of studies are gold-labeled in
+    # this dataset; if label and size costs compete from the start, whichever fold
+    # falls behind on labels early never recovers (its relative label deviation
+    # stays near the maximum no matter how many zero-label studies land there
+    # later), and it ends up empty. Label balance and size balance are solved as
+    # two separate passes instead.
+    for items, labels, _priority in labeled:
+        costs = [
+            float(np.mean(((fold_labels[fold] + labels - target_labels) / np.maximum(target_labels, 1.0)) ** 2))
+            for fold in range(folds)
+        ]
         chosen = min(range(folds), key=lambda fold: (costs[fold], fold_sizes[fold], fold))
         fold_labels[chosen] += labels
         fold_sizes[chosen] += len(items)
         for record in items:
             assignments[str(record["study_id"])] = chosen
+
+    # Phase 2: everything without a positive label only has to balance group size.
+    for items in unlabeled:
+        chosen = min(range(folds), key=lambda fold: (fold_sizes[fold], fold))
+        fold_sizes[chosen] += len(items)
+        for record in items:
+            assignments[str(record["study_id"])] = chosen
+
     return assignments
 
 
